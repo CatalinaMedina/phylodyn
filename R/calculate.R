@@ -380,6 +380,111 @@ infer_coal_samp <- function(samp_times, coal_times, n_sampled=NULL, fns = NULL,
   return(list(result = mod, data = data, grid = grid, x = coal_data$time))
 }
 
+#' infer_coal_samp with reporting delay function incorporated into sampling intensity
+#' 
+#' @param rd_fn reporting delay function 
+#' 
+infer_coal_samp_rd <- function(samp_times, coal_times, n_sampled=NULL, rd_fn = NULL, fns = NULL,
+                            lengthout=100, prec_alpha=0.01, prec_beta=0.01,
+                            beta1_prec=0.001, use_samp = FALSE, log_fns = TRUE,
+                            simplify = FALSE, events_only = FALSE,
+                            derivative = FALSE, link=1)
+{
+  if (!requireNamespace("INLA", quietly = TRUE)) {
+    stop('INLA needed for this function to work. Use install.packages("INLA", repos=c(getOption("repos"), INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE).',
+         call. = FALSE)
+  }
+  
+  if (min(coal_times) < min(samp_times))
+    stop("First coalescent time occurs before first sampling time")
+  
+  if (max(samp_times) > max(coal_times))
+    stop("Last sampling time occurs after last coalescent time")
+  
+  grid <- seq(min(samp_times), max(coal_times), length.out = lengthout+1)
+  
+  if (is.null(n_sampled))
+    n_sampled <- rep(1, length(samp_times))
+  
+  coal_data <- coal_stats(grid = grid, samp_times = samp_times, n_sampled = n_sampled,
+                          coal_times = coal_times)
+  
+  if (simplify)
+    coal_data <- with(coal_data, condense_stats(time=time, event=event, E=E))
+  
+  hyper <- list(prec = list(param = c(prec_alpha, prec_beta)))
+  
+  if (!use_samp)
+  {
+    data <- with(coal_data, data.frame(y = event, time = time, E_log = E_log))
+    
+    formula <- y ~ -1 + f(time, model="rw1", hyper = hyper, constr = FALSE)
+    family <- "poisson"
+  }
+  else if (use_samp)
+  {
+    if (events_only)
+      samp_data <- samp_stats(grid = grid, samp_times = samp_times)
+    else
+      samp_data <- samp_stats(grid = grid, samp_times = samp_times,
+                              n_sampled = n_sampled)
+    
+    data <- joint_stats(coal_data = coal_data, samp_data = samp_data)
+    
+    if (is.null(fns))
+    {
+      formula <- Y ~ -1 + beta0 +
+        f(time, model="rw1", hyper = hyper, constr = FALSE) +
+        f(time2, w, copy="time", fixed=FALSE, param=c(0, beta1_prec))
+    }
+    else
+    {
+      vals <- NULL
+      bins <- sum(data$beta0 == 0)
+      for (fni in fns)
+      {
+        if (log_fns)
+          vals <- cbind(vals, c(rep(0, bins), log(fni(samp_data$time))))
+        else
+          vals <- cbind(vals, c(rep(0, bins), fni(samp_data$time)))
+      }
+      data$fn <- vals
+      
+      formula <- Y ~ -1 + beta0 + fn +
+        f(time, model="rw1", hyper = hyper, constr = FALSE) +
+        f(time2, w, copy="time", fixed=FALSE, param=c(0, beta1_prec))
+    }
+    
+    family <- c("poisson", "poisson")
+  }
+  else
+    stop("Invalid use_samp value, should be boolean.")
+  
+  if (derivative)
+  {
+    Imat <- diag(lengthout)
+    A <- utils::head(Imat, -1) - utils::tail(Imat, -1)
+    field <- grid[-1] - diff(grid)/2
+    A <- diag(1/diff(field)) %*% A
+    A[A == 0] <- NA
+    
+    lc_many <- INLA::inla.make.lincombs(time = A)
+  }
+  else
+  {
+    lc_many <- NULL
+  }
+  mod <- INLA::inla(formula, family = family, data = data,
+                    lincomb = lc_many, offset = data$E_log,
+                    control.predictor = list(compute=TRUE, link=link))
+  #mod <- INLA::inla(formula, family = family, data = data,
+  #                 lincomb = lc_many, offset = data$E_log,
+  #                control.predictor = list(compute=TRUE, link=link),
+  #               control.inla = list(lincomb.derived.only=FALSE))
+  
+  return(list(result = mod, data = data, grid = grid, x = coal_data$time))
+}
+
 infer_coal_deriv <- function(samp_times, coal_times, n_sampled = NULL, lengthout = 100,
                              prec_alpha = 0.01, prec_beta = 0.01, simplify = FALSE)
 {
