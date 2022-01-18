@@ -380,9 +380,9 @@ infer_coal_samp <- function(samp_times, coal_times, n_sampled=NULL, fns = NULL,
   return(list(result = mod, data = data, grid = grid, x = coal_data$time))
 }
 
-#' infer_coal_samp with reporting delay function incorporated into sampling intensity
+#' infer_coal_samp with reporting delay function incorporated into sampling intensity as offset
 #' 
-#' @param rd_fn reporting delay function 
+#' @param rd_fn reporting delay function returning probability of sample being reported given sample time from present 
 #' 
 infer_coal_samp_rd <- function(samp_times, coal_times, n_sampled=NULL, rd_fn = NULL, fns = NULL,
                             lengthout=100, prec_alpha=0.01, prec_beta=0.01,
@@ -401,13 +401,17 @@ infer_coal_samp_rd <- function(samp_times, coal_times, n_sampled=NULL, rd_fn = N
   if (max(samp_times) > max(coal_times))
     stop("Last sampling time occurs after last coalescent time")
   
-  grid <- seq(min(samp_times), max(coal_times), length.out = lengthout+1)
+  grid <- seq(min(samp_times), max(coal_times), length.out = lengthout + 1)
   
   if (is.null(n_sampled))
     n_sampled <- rep(1, length(samp_times))
   
-  coal_data <- coal_stats(grid = grid, samp_times = samp_times, n_sampled = n_sampled,
-                          coal_times = coal_times)
+  coal_data <- coal_stats(
+    grid = grid, 
+    samp_times = samp_times, 
+    n_sampled = n_sampled,
+    coal_times = coal_times
+  )
   
   if (simplify)
     coal_data <- with(coal_data, condense_stats(time=time, event=event, E=E))
@@ -426,8 +430,11 @@ infer_coal_samp_rd <- function(samp_times, coal_times, n_sampled=NULL, rd_fn = N
     if (events_only)
       samp_data <- samp_stats(grid = grid, samp_times = samp_times)
     else
-      samp_data <- samp_stats(grid = grid, samp_times = samp_times,
-                              n_sampled = n_sampled)
+      samp_data <- samp_stats(
+        grid = grid, 
+        samp_times = samp_times,
+        n_sampled = n_sampled
+      )
     
     data <- joint_stats(coal_data = coal_data, samp_data = samp_data)
     
@@ -474,13 +481,19 @@ infer_coal_samp_rd <- function(samp_times, coal_times, n_sampled=NULL, rd_fn = N
   {
     lc_many <- NULL
   }
-  mod <- INLA::inla(formula, family = family, data = data,
-                    lincomb = lc_many, offset = data$E_log,
-                    control.predictor = list(compute=TRUE, link=link))
-  #mod <- INLA::inla(formula, family = family, data = data,
-  #                 lincomb = lc_many, offset = data$E_log,
-  #                control.predictor = list(compute=TRUE, link=link),
-  #               control.inla = list(lincomb.derived.only=FALSE))
+  
+  # Add reporting delay values as offset
+  data$rd_vals_log <- rep(0, length(samp_data$time))
+  
+  if (!is.null(rd_fn)) {
+    data$rd_vals_log <- log(rd_fn(samp_data$time))
+  }
+  
+  mod <- INLA::inla(
+    formula, family = family, data = data,
+    lincomb = lc_many, offset = data$E_log + data$rd_vals_log,
+    control.predictor = list(compute=TRUE, link=link)
+  )
   
   return(list(result = mod, data = data, grid = grid, x = coal_data$time))
 }
